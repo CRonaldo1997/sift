@@ -40,10 +40,14 @@ def siftImageAlignment(img1,img2):
 
 img1 = cv2.imread('./img/2.jpg')
 img2 = cv2.imread('./img/3.jpg')
+print(img1.shape)
+print(img2.shape)
 
 
 start = time()
 result,_,_ = siftImageAlignment(img1,img2)
+
+print(result.shape)
 end = time()
 print('time cost is: ',end - start)
 cv2.imshow('result',result)
