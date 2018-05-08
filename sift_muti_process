@@ -1,0 +1,121 @@
+import sys
+sys.path.append("./ocr")
+from ocr.model import predict
+from time import time
+from PIL import Image
+import cv2
+import numpy as np
+import glob
+import io
+import six
+from multiprocessing import Process
+from uuid import uuid1
+
+
+class IdOcr:
+
+    def __init__(self):
+        self.template = cv2.imread('./template/idcard.png')
+        self.chi_region = [220, 328, 60, 600]
+        self.eng_region = [330, 420, 60, 1400]
+        self.dob_region = [698, 790, 586, 1090]
+        self.gender_region = [694, 790, 1200, 1410]
+        self.cardno_region = [1075, 1200, 1250, 1900]
+
+    def sift_kp(self, image):
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        sift = cv2.xfeatures2d_SIFT.create()
+        kp, des = sift.detectAndCompute(image, None)
+        kp_image = cv2.drawKeypoints(gray_image, kp, None)
+        return kp_image, kp, des
+
+    def get_good_match(self, des1, des2):
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+        good = []
+        for m, n in matches:
+            if m.distance < 0.75 * n.distance:
+                good.append(m)
+        return good
+
+    def siftImageAlignment(self,img1, img2):
+        _, kp1, des1 = self.sift_kp(img1)
+        _, kp2, des2 = self.sift_kp(img2)
+        goodMatch = self.get_good_match(des1, des2)
+        if len(goodMatch) > 4:
+            ptsA = np.float32([kp1[m.queryIdx].pt for m in goodMatch]).reshape(-1, 1, 2)
+            ptsB = np.float32([kp2[m.trainIdx].pt for m in goodMatch]).reshape(-1, 1, 2)
+            ransacReprojThreshold = 4
+            H, status = cv2.findHomography(ptsA, ptsB, cv2.RANSAC, ransacReprojThreshold);
+            imgOut = cv2.warpPerspective(img2, H, (img1.shape[1], img1.shape[0]),
+                                         flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+        return imgOut, H, status
+
+    def from_byte_to_arr(self,imgByteArr):
+        buf = six.BytesIO()
+        buf.write(imgByteArr)
+        buf.seek(0)
+        img_temp = Image.open(buf)
+        return np.array(img_temp)
+
+    def save_img(self,img):
+        cv2.imwrite('./saveImg/'+str(uuid1())+'.png',img)
+
+    def get_id_ocr(self,imgByteArr):
+        start = time()
+        id_img = self.from_byte_to_arr(imgByteArr)
+        process = Process(target=self.save_img, args=(id_img,))
+        process.start()
+
+        result, _, _ = self.siftImageAlignment(self.template,id_img)
+        #print('result shape is, ', result.shape)
+        # cv2.imwrite('./resultImg/result.jpg',result)
+        # cv2.imshow('result',result)
+        # cv2.waitKey(0)
+
+        chi_name_img = result[self.chi_region[0]:self.chi_region[1], self.chi_region[2]:self.chi_region[3]]
+        # cv2.imshow('chi_name_img',chi_name_img)
+        # cv2.waitKey(0)
+
+        eng_name_img = result[self.eng_region[0]:self.eng_region[1], self.eng_region[2]:self.eng_region[3]]
+        # cv2.imshow('eng_name_img',eng_name_img)
+        # cv2.waitKey(0)
+
+        dob_img = result[self.dob_region[0]:self.dob_region[1], self.dob_region[2]:self.dob_region[3]]
+        # cv2.imshow('dob_name_img',dob_img)
+        # cv2.waitKey(0)
+
+        gender_img = result[self.gender_region[0]:self.gender_region[1], self.gender_region[2]:self.gender_region[3]]
+        # cv2.imshow('gender_region',gender_img)
+        # cv2.waitKey(0)
+
+        cardno_img = result[self.cardno_region[0]:self.cardno_region[1], self.cardno_region[2]:self.cardno_region[3]]
+        # cv2.imshow('cardno_region',cardno_img)
+        # cv2.waitKey(0)
+
+        end = time()
+        print('time cost is: ', end - start)
+
+        # get ocr result
+        chi_name_raw = predict(Image.fromarray(chi_name_img))
+        eng_name_raw = predict(Image.fromarray(eng_name_img))
+        dob_raw = predict(Image.fromarray(dob_img))
+        gender_raw = predict(Image.fromarray(gender_img))
+        cardno_raw = predict(Image.fromarray(cardno_img))
+
+        print(chi_name_raw, eng_name_raw, dob_raw, gender_raw, cardno_raw)
+        print("\n")
+
+
+if __name__ == '__main__':
+    img_path_list = glob.glob('./test/*.*')
+    idOcr = IdOcr()
+    for img_path in img_path_list:
+        id_img_arr = cv2.imread(img_path)
+        id_img = Image.fromarray(id_img_arr)
+
+        imgByteArr = io.BytesIO()
+        id_img.save(imgByteArr, format='PNG')
+        imgByteArr = imgByteArr.getvalue()
+
+        idOcr.get_id_ocr(imgByteArr)
