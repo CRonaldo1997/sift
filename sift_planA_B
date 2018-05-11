@@ -1,0 +1,367 @@
+import model
+import sys
+sys.path.append("./ocr")
+from ocr.model import predict
+from ocr import keys
+from time import time
+from PIL import Image
+import cv2
+import numpy as np
+import glob
+import io
+import six
+from multiprocessing import Process
+from uuid import uuid1
+import os
+
+
+class IdOcr:
+
+    def __init__(self):
+        self.template_1 = cv2.imread('./template/idcard.png')
+        self.chi_region_1 = [216, 328, 60, 600]
+        self.eng_region_1 = [330, 420, 60, 1400]
+        self.dob_region_1 = [698, 790, 586, 1090]
+        self.gender_region_1 = [694, 790, 1200, 1410]
+        self.cardno_region_1 = [1075, 1200, 1250, 1900]
+
+        self.template_2 = cv2.imread('./template/id_template.jpg')
+        self.chi_region_2 = [125, 184, 30, 400]
+        self.eng_region_2 = [185, 244, 30, 700]
+        self.dob_region_2 = [410, 465, 340, 650]
+        self.gender_region_2 = [407, 457, 730, 840]
+        self.cardno_region_2 = [645, 720, 740, 1160]
+
+        self.characters = keys.alphabet[:]+u' '
+        #cv2.imshow('template_2',self.template_2)
+
+    def get_sorted_idx_list(self,idx_coord_dic):
+        sorted_list = []
+        dict_sorted = [(k, idx_coord_dic[k]) for k in
+                           sorted(idx_coord_dic, key=idx_coord_dic.get, reverse=False)]
+
+        for k in dict_sorted:
+            sorted_list.append(k[0])
+        return sorted_list
+
+    def process_card_no(self,card_no):
+        card_no = card_no.replace(' ','').replace("'","").upper()
+        if card_no.__contains__('D') and card_no.index('D') != 0:
+            card_no.replace('D','0')
+        cardno_list = list(card_no)
+        if ')' not in card_no:
+            cardno_list.append(')')
+        if '(' not in card_no:
+            cardno_list.insert(-2,'(')
+
+        return ''.join(cardno_list)
+
+    def process_gender(self,gender):
+        if gender.__contains__('男') or gender.__contains__('M'):
+            return '男 M'
+        elif gender.__contains__('女') or gender.__contains__('F'):
+            return '女 F'
+        else:
+            return gender
+
+
+    def ctpn_process_eng_name(self, eng_name, is_first, has_chi_name):
+        eng_name = eng_name.replace(' ','').replace("'","")
+        if has_chi_name and eng_name[-1] == 'q':
+            eng_name = eng_name[0:len(eng_name)-1] + 'g'
+        if is_first:
+            if eng_name.__contains__(','):
+                name_list = eng_name.split(',')
+                return name_list[0].upper().join(name_list[1].lower())
+
+            return eng_name.upper()
+        else:
+            return eng_name[0].upper() + eng_name[1::].lower()
+
+    def ctpn_process_chi_name(self,result,chi_idx_list):
+        chi_name_list=[]
+        for idx in chi_idx_list:
+            chi_name_list.append(result[idx][1].replace(' ','').replace("'",""))
+        return ''.join(chi_name_list)
+
+    def get_eng_name(self,eng_name_idx_list,result,has_chi_name):
+        eng_name_list = []
+        for idx,i in enumerate(eng_name_idx_list):
+            if idx == 0:
+                is_first = True
+            else:
+                is_first = False
+            eng_name_list.append(self.ctpn_process_eng_name(result[i][1],is_first,has_chi_name))
+        return ''.join(eng_name_list).strip()
+
+    def get_ctpn_ocr_result(self,img):
+        result, img = model.model(img)
+        return result,img
+
+    def get_ctpn_array(self,result):
+        ctpn_list = []
+        for key, value in result.items():
+            ctpn_list.append(value[0])
+        return np.array(ctpn_list)
+
+    def get_anchor_list(self,ctpn_arr):
+        chi_title_idx = np.argmin(ctpn_arr[:, 1])
+        id_no_idx = np.argmax(ctpn_arr[1::, 6]) + 1
+        return [chi_title_idx,id_no_idx]
+
+    def get_target_idx(self,anchor_list,ctpn_arr):
+        eng_ratio_lower_bound = 0.2061
+        eng_ratio_upper_bound = 0.280
+
+        chi_ratio_lower_bound = 0.0891
+        chi_ratio_upper_bound = 0.1936
+
+        dob_gender_lower_bound = 0.5920
+        dob_gender_upper_bound = 0.6627
+
+        chi_title_idx = anchor_list[0]
+        cardno_idx = anchor_list[1]
+        chi_title_lower_y = 1.0/2*(ctpn_arr[chi_title_idx][5]+ctpn_arr[chi_title_idx][7])
+        cardno_upper_y = 1.0/2*(ctpn_arr[cardno_idx][1]+ctpn_arr[cardno_idx][3])
+        distance = cardno_upper_y - chi_title_lower_y
+
+        chi_idx_coord_dict = {}
+        eng_idx_coord_dict = {}
+        dob_gender_coord_dict = {}
+
+        for i in range(anchor_list[0]+1,anchor_list[1]):
+            coord = ctpn_arr[i][:]
+            y_upper = 1.0/2*(coord[1]+coord[3])
+            y_lower = 1.0/2*(coord[5]+coord[7])
+            y_mid = 0.5*(y_upper+y_lower)
+            y_mid_ratio = (y_mid-chi_title_lower_y)*1.0/distance
+            if y_mid_ratio > chi_ratio_lower_bound and y_mid_ratio < chi_ratio_upper_bound:
+                chi_idx_coord_dict[i]=ctpn_arr[i][0]
+
+            if y_mid_ratio > eng_ratio_lower_bound and y_mid_ratio < eng_ratio_upper_bound:
+                eng_idx_coord_dict[i] = ctpn_arr[i][0]
+
+            if y_mid_ratio > dob_gender_lower_bound and y_mid_ratio < dob_gender_upper_bound:
+                dob_gender_coord_dict[i] = ctpn_arr[i][0]
+        sorted_chi_list = self.get_sorted_idx_list(chi_idx_coord_dict)
+        sorted_eng_list = self.get_sorted_idx_list(eng_idx_coord_dict)
+        dob_gender_list = self.get_sorted_idx_list(dob_gender_coord_dict)
+
+        return sorted_chi_list, sorted_eng_list,dob_gender_list
+
+
+
+
+
+
+    #---------------- Plan A ---------------------------
+
+    def process_dob(self,dob_raw,dob_pixel_list,dob_pred,dob_conf_list):
+        dob_list = list(dob_raw)
+        pred_pixel_list = np.argsort(dob_pred[0],axis=1)[:,::-1]
+        for idx,c in enumerate(dob_raw):
+            if c.isalpha():
+                pixel_idx = dob_pixel_list[idx]
+                char_idx_list = pred_pixel_list[pixel_idx, :]
+                new_c,c_idx = self.get_correction(char_idx_list)
+
+                if new_c != None:
+                    dob_list[idx] = new_c
+                    new_confidence = dob_pred[0, pixel_idx, c_idx]
+                    dob_conf_list[idx] = new_confidence
+
+        return ''.join(dob_list), dob_conf_list
+
+
+    def process_eng_name(self, eng_raw, eng_pixel_list, eng_pred, eng_conf_list):
+        eng_list = list(eng_raw)
+        pred_pixel_list = np.argsort(eng_pred[0],axis=1)[:,::-1]
+        for idx,c in enumerate(eng_raw):
+            if c.isdigit():
+                pixel_idx = eng_pixel_list[idx]
+                char_idx_list = pred_pixel_list[pixel_idx, :]
+                new_c,c_idx = self.eng_correction(char_idx_list)
+
+                if new_c != None:
+                    eng_list[idx] = new_c
+                    new_confidence = eng_pred[0, pixel_idx, c_idx]
+                    eng_conf_list[idx] = new_confidence
+
+        return ''.join(eng_list), eng_conf_list
+
+
+    def sift_kp(self, image):
+        gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        sift = cv2.xfeatures2d_SIFT.create()
+        kp, des = sift.detectAndCompute(image, None)
+        kp_image = cv2.drawKeypoints(gray_image, kp, None)
+        return kp_image, kp, des
+
+    def get_good_match(self, des1, des2):
+        bf = cv2.BFMatcher()
+        matches = bf.knnMatch(des1, des2, k=2)
+        good = []
+        for m, n in matches:
+            if m.distance < 0.75 * n.distance:
+                good.append(m)
+        return good
+
+    def siftImageAlignment(self,img1, img2):
+        _, kp1, des1 = self.sift_kp(img1)
+        _, kp2, des2 = self.sift_kp(img2)
+        goodMatch = self.get_good_match(des1, des2)
+        print('len of good match: ',len(goodMatch))
+        if len(goodMatch) > 4:
+            ptsA = np.float32([kp1[m.queryIdx].pt for m in goodMatch]).reshape(-1, 1, 2)
+            ptsB = np.float32([kp2[m.trainIdx].pt for m in goodMatch]).reshape(-1, 1, 2)
+            ransacReprojThreshold = 4
+            H, status = cv2.findHomography(ptsA, ptsB, cv2.RANSAC, ransacReprojThreshold);
+            imgOut = cv2.warpPerspective(img2, H, (img1.shape[1], img1.shape[0]),
+                                         flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+        return imgOut, H, status
+
+    def from_byte_to_arr(self,imgByteArr):
+        buf = six.BytesIO()
+        buf.write(imgByteArr)
+        buf.seek(0)
+        img_temp = Image.open(buf)
+        return np.array(img_temp)
+
+    def save_img(self,img):
+        save_path = './saveImg/'
+        if not os.path.exists(save_path):
+            os.makedirs(save_path)
+        cv2.imwrite(save_path+str(uuid1())+'.png', img)
+
+    def get_correction(self, char_idx_list):
+        for e in char_idx_list:
+            c = self.characters[e]
+            if c.isdigit():
+                return c,e
+        return None
+
+    def eng_correction(self, char_idx_list):
+        for e in char_idx_list:
+            c = self.characters[e]
+            if c.isalpha():
+                return c,e
+        return None
+
+
+    def get_id_ocr_result(self,template,id_img,chi_region,eng_region,dob_region,gender_region,cardno_region):
+        start = time()
+        result, _, _ = self.siftImageAlignment(template,id_img)
+        # print('result shape is, ', result.shape)
+        # cv2.imwrite('./resultImg/result.jpg',result)
+        # cv2.imshow('result',result)
+        # cv2.waitKey(0)
+
+        chi_name_img = result[chi_region[0]:chi_region[1], chi_region[2]:chi_region[3]]
+        # cv2.imshow('chi_name_img',chi_name_img)
+        # cv2.waitKey(0)
+
+        eng_name_img = result[eng_region[0]:eng_region[1], eng_region[2]:eng_region[3]]
+        # cv2.imshow('eng_name_img',eng_name_img)
+        # cv2.waitKey(0)
+
+        dob_img = result[dob_region[0]:dob_region[1], dob_region[2]:dob_region[3]]
+        # cv2.imshow('dob_name_img',dob_img)
+        # cv2.waitKey(0)
+
+        gender_img = result[gender_region[0]:gender_region[1], gender_region[2]:gender_region[3]]
+        # cv2.imshow('gender_region',gender_img)
+        # cv2.waitKey(0)
+
+        cardno_img = result[cardno_region[0]:cardno_region[1], cardno_region[2]:cardno_region[3]]
+        # cv2.imshow('cardno_region',cardno_img)
+        # cv2.waitKey(0)
+
+        # cv2.destroyAllWindows()
+
+        end = time()
+        print('time cost is: ', end - start)
+
+        # get ocr result
+        chi_name_raw, chi_pixel_list, chi_pred, chi_conf_list = predict(Image.fromarray(chi_name_img))
+        eng_name_raw, eng_pixel_list, eng_pred, eng_conf_list = predict(Image.fromarray(eng_name_img))
+        dob_raw, dob_pixel_list, dob_pred, dob_conf_list = predict(Image.fromarray(dob_img))
+        gender_raw, gender_pixel_list, gender_pred, gender_conf_list = predict(Image.fromarray(gender_img))
+        cardno_raw, cardno_pixel_list , cardno_pred, cardno_conf_list = predict(Image.fromarray(cardno_img))
+
+        #process raw result:
+
+        dob, dob_conf_list = self.process_dob(dob_raw, dob_pixel_list, dob_pred,dob_conf_list)
+        # raw_eng_list = list(eng_name_raw)
+        # raw_eng_list[1] = '1'
+        # eng_name_raw = ''.join(raw_eng_list)
+
+        eng_name, eng_conf_list = self.process_eng_name(eng_name_raw, eng_pixel_list, eng_pred, eng_conf_list)
+
+        resutl_dict = {}
+        resutl_dict['chi_name'] = chi_name_raw
+        resutl_dict['eng_name'] = eng_name
+        resutl_dict['dob'] = dob
+        resutl_dict['gender'] = gender_raw
+        resutl_dict['card_no'] = cardno_raw
+        return resutl_dict
+
+    def hk_id_predict(self,imgByteArr):
+        id_img = self.from_byte_to_arr(imgByteArr)
+        process = Process(target=self.save_img, args=(id_img,))
+        process.start()
+
+        template_1_result_dict = self.get_id_ocr_result(self.template_1, id_img, self.chi_region_1,
+                                                        self.eng_region_1, self.dob_region_1, self.gender_region_1,
+                                                        self.cardno_region_1)
+
+
+        #if plan A failed, try plan B
+
+        if len(template_1_result_dict['card_no'])<5 \
+                 or len(template_1_result_dict['dob'])<5:
+            print('Sift failed, try ctpn...')
+            id_card_info = {}
+            result, img = self.get_ctpn_ocr_result(id_img)
+            ctpn_arr = self.get_ctpn_array(result)
+            anchor_list = self.get_anchor_list(ctpn_arr)
+            chi_idx_list, eng_idx_list, dob_gender_idx = self.get_target_idx(anchor_list, ctpn_arr)
+            id_no_idx = anchor_list[1]
+            if len(chi_idx_list) < 1:
+                id_card_info['chi_name'] = None
+                has_chi_name = False
+            else:
+                id_card_info['chi_name'] = self.ctpn_process_chi_name(result, chi_idx_list)
+                has_chi_name = True
+
+            id_card_info['eng_name'] = self.get_eng_name(eng_idx_list, result, has_chi_name)
+            # id_card_info['dob'] = self.cptn_process_dob(result[dob_gender_idx[0]][1])
+            dob_raw = result[dob_gender_idx[0]][1]
+            dob_pixel_list = result[dob_gender_idx[0]][2]
+            dob_pred = result[dob_gender_idx[0]][3]
+            dob_conf_list = result[dob_gender_idx[0]][4]
+            dob, dob_conf_list = self.process_dob(dob_raw, dob_pixel_list, dob_pred, dob_conf_list)
+            id_card_info['dob'] = dob.replace("'","")
+
+            if len(dob_gender_idx) == 2:
+                id_card_info['gender'] = self.process_gender(result[dob_gender_idx[1]][1])
+            if len(dob_gender_idx) == 1:
+                id_card_info['gender'] = None
+
+            id_card_info['card_no'] = self.process_card_no(result[id_no_idx][1])
+            return id_card_info
+
+        return template_1_result_dict
+
+if __name__ == '__main__':
+    img_path_list = glob.glob('./testSet/yang.*')
+    idOcr = IdOcr()
+    for img_path in img_path_list:
+        print('img path is: ', img_path)
+        id_img_arr = cv2.imread(img_path)
+        id_img = Image.fromarray(id_img_arr)
+
+        imgByteArr = io.BytesIO()
+        id_img.save(imgByteArr, format='PNG')
+        imgByteArr = imgByteArr.getvalue()
+        ocr_result = idOcr.hk_id_predict(imgByteArr)
+        print(ocr_result)
