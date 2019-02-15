@@ -1,0 +1,244 @@
+import re
+import id_no_generator
+import cv2
+import numpy as np
+import Levenshtein
+
+
+
+
+class ExtractROI():
+
+    def __init__(self):
+        self.NAME = 'NAME'
+        self.DOB = 'DOB'
+        self.ID_NO = 'ID_NO'
+        self.GENDER = 'GENDER'
+        self.IMG_NAME = 'IMG_NAME'
+        self.IS_VALID = 'IS_VALID'
+        self.template_words_list = ['户主或与','户主关系']
+
+    def draw_boxes(self,img,x,y,w,h):
+        img = cv2.rectangle(img,(int(x),int(y)),(int(x+w),int(y+h)),(0,255,0),3)
+        return img
+
+
+    def get_search_area(self, anchor_idx, roi_title, result, img):
+        result_dict = result[anchor_idx]
+        anchor_x, anchor_y, anchor_w, anchor_h = result_dict['cx']-result_dict['w']/2,result_dict['cy']-result_dict['h']/2,result_dict['w'],result_dict['h']
+        if roi_title == 'gender':
+            x = anchor_x + 5*anchor_h
+            y = anchor_y - 4*anchor_h
+            w = int(8*anchor_h)
+            h = 2*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+        if roi_title == 'name':
+            x = anchor_x - 11*anchor_h
+            y = anchor_y - 7*anchor_h
+            w = int(10*anchor_h)
+            h = 3*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+        if roi_title == 'cz_name':
+            x = anchor_x - 2*anchor_h
+            y = anchor_y + anchor_h
+            w = int(10*anchor_h)
+            h = 2*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+
+
+    def find_gender_in_search_area(self,x,y,w,h,male_dict,female_dict,result):
+        gender = ''
+        if male_dict:
+            for key in male_dict.keys():
+                cx, cy = float(result[key]['cx']),float(result[key]['cy'])
+                if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                    gender = '男'
+                    return gender
+        if female_dict:
+            for key in female_dict.keys():
+                result_dict = result[key]
+                cx, cy = float(result_dict['cx']), float(result_dict['cy'])
+                if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                    gender = '女'
+                    return gender
+        return gender
+
+    def get_pure_chinese(self,text):
+        pure_chi = []
+        for c in text:
+            if c>=u'\u4e00' and c<=u'\u9fa5':
+                pure_chi.append(c)
+        return ''.join(pure_chi)
+
+    def get_real_name(self,candidate_list):
+        name = ''
+        # min_ratio = 1.1
+        for candidate in list(candidate_list.keys()):
+            for ref in self.template_words_list:
+                # temp_ratio = Levenshtein.ratio(candidate,ref)
+                distance = Levenshtein.distance(candidate,ref)
+                # if temp_ratio < min_ratio:
+                #     min_ratio = temp_ratio
+                #     name = candidate
+                if distance <=2:
+                    name = candidate
+        return name
+
+    def sort_dict_by_value(self,a_dict):
+        return dict(sorted(a_dict.items(), key=lambda x: x[1], reverse=False))
+
+    def find_name_in_search_area(self, x, y, w, h, result):
+        name = ''
+        candidate_dict = {}
+        for idx, a_result in enumerate(result):
+            cx, cy = a_result['cx'], a_result['cy']
+            if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                chi_text = self.get_pure_chinese(a_result['text']).replace('丨','')
+                if len(chi_text) >= 2 and len(chi_text) <= 4:
+                    candidate_dict[chi_text] = cx
+        candidate_dict = self.sort_dict_by_value(candidate_dict)
+        name = self.get_real_name(candidate_dict)
+        if name.find('名')==0:
+            name = name.replace('名', '', 1)
+            return name
+        return name
+
+    def get_name(self,result,anchor_matched_dict, anchor_cz_matched_dict,img):
+        name = ''
+        if anchor_matched_dict:
+            anchor_idx = list(anchor_matched_dict.keys())[0]
+            x, y, w, h, img = self.get_search_area(anchor_idx, 'name', result, img)
+            name = self.find_name_in_search_area(x, y, w, h, result)
+            return name, img
+        elif anchor_cz_matched_dict:
+            anchor_idx = list(anchor_cz_matched_dict.keys())[0]
+            x, y, w, h, img = self.get_search_area(anchor_idx, 'cz_name', result, img)
+            name = self.find_name_in_search_area(x, y, w, h, result)
+            return name, img
+
+        else:
+            return name, img
+
+
+    def get_dob(self,dob_matched_dict):
+        dob = ''
+        if dob_matched_dict:
+            return list(dob_matched_dict.values())[0]
+        return dob
+
+    def get_id_no(self, id_no_matched):
+        return id_no_matched
+
+    def get_gender(self,dob_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict,result, img):
+        vote_dict = {'男':0,'女':0}
+
+        if anchor_matched_dict:
+            anchor_idx = list(anchor_matched_dict.keys())[0]
+            x,y,w,h,img = self.get_search_area(anchor_idx, 'gender', result, img)
+            gender = self.find_gender_in_search_area(x,y,w,h,male_dict,female_dict,result)
+            print('gender is: ',gender)
+            if gender != '':
+                vote_dict[gender] = vote_dict.get(gender,0)+5
+
+            else:
+                vote_dict['男'] += (len(male_dict)) + gender_cnt_dict['男']
+                vote_dict['女'] += (len(female_dict)) + gender_cnt_dict['女']
+        else:
+            vote_dict['男'] += (len(male_dict)) + gender_cnt_dict['男']
+            vote_dict['女'] += (len(female_dict)) + gender_cnt_dict['女']
+
+        return '男' if vote_dict['男'] >= vote_dict['女'] else '女' ,img
+
+    def find_re(self,result):
+        # candidate_idx = set(range(len(result)))
+        DATE_REX_P1 = re.compile("([0-9oO]+.*年[0-9oO]{1,2}月[0-9oO]{1,2}日)")
+        DATE_REX_P2 = re.compile('([0-9oO]+.*-[0-9oO]{1,2}-[0-9oO]{1,2})')
+        ID_NO_REX = re.compile(r'[\dxX]{14,19}')
+        MALE_REX = re.compile(r'男')
+        FEMALE_REX = re.compile(r'女')
+        ANCHOR_REX = re.compile(r'出生日')
+        ANCHOR_REX_CZ = re.compile(r'常住')
+
+
+        dob_matched_dict={}
+        id_no_matched_dict={}
+        male_dict = {}
+        female_dict = {}
+        anchor_matched_dict = {}
+        anchor_cz_matched_dict = {}
+        gender_cnt_dict = {'男':0,'女':0}
+
+        for idx,content in enumerate(result):
+            anchor_cz_matched = re.findall(ANCHOR_REX_CZ, content['text'])
+            if len(anchor_cz_matched)>0:
+                anchor_cz_matched_dict[idx] = anchor_cz_matched[0]
+
+            anchor_matched = re.findall(ANCHOR_REX, content['text'])
+            if len(anchor_matched)>0:
+                anchor_matched_dict[idx] = anchor_matched[0]
+
+            dob_matched_text = re.findall(DATE_REX_P1, content['text'])
+            if len(dob_matched_text) > 0:
+                dob_matched_dict[idx] = dob_matched_text[0]
+            dob_matched_text = re.findall(DATE_REX_P2, content['text'])
+            if len(dob_matched_text) > 0:
+                dob_matched_dict[idx] = dob_matched_text[0]
+
+
+            id_no_matched_text = re.findall(ID_NO_REX, content['text'])
+            if len(id_no_matched_text) > 0:
+                id_no_matched_dict[idx] = id_no_matched_text[0]
+
+            male_matched_text = re.findall(MALE_REX,content['text'])
+            if len(male_matched_text) > 0:
+                male_dict[idx] = male_matched_text[0]
+
+            female_matched_text = re.findall(FEMALE_REX,content['text'])
+            if len(female_matched_text) > 0:
+                female_dict[idx] = female_matched_text[0]
+
+            if '男' in content['text'] or '子' in content['text']:
+                gender_cnt_dict['男'] += 1
+            if '女' in content['text']:
+                gender_cnt_dict['女'] += 1
+
+        return dob_matched_dict, id_no_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict, anchor_cz_matched_dict
+
+    def get_roi(self, img_name, result,img):
+        # img = np.asarray(img)
+        is_valid = False
+        ocr_dict={}
+        ocr_dict[self.IMG_NAME] = img_name
+        id_no_matched = ''
+        #get info
+        dob_matched_dict, id_no_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict, anchor_cz_matched_dict = self.find_re(result)
+
+        if id_no_matched_dict:
+            id_no_matched = list(id_no_matched_dict.values())[0]
+            is_valid, _, gender_from_no, dob_from_no = id_no_generator.is_id_card(id_no_matched)
+            # is_valid = False
+        if is_valid:
+            ocr_dict[self.ID_NO] = id_no_matched
+            ocr_dict[self.GENDER] = gender_from_no
+            ocr_dict[self.DOB] = dob_from_no
+            ocr_dict[self.IS_VALID] = True
+        else:
+            if id_no_matched!='':
+                ocr_dict[self.ID_NO] = self.get_id_no(id_no_matched)
+            else:
+                ocr_dict[self.ID_NO] = ''
+            ocr_dict[self.GENDER],img = self.get_gender(dob_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict, result, img)
+            ocr_dict[self.DOB] = self.get_dob(dob_matched_dict)
+            ocr_dict[self.IS_VALID] = False
+
+        ocr_dict[self.NAME],img = self.get_name(result,anchor_matched_dict,anchor_cz_matched_dict,img)
+        # cv2.imshow('final',img)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+        cv2.imwrite('./imgWithBBox/'+img_name,img)
+
+        print(ocr_dict)
+        return ocr_dict
