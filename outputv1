@@ -1,0 +1,352 @@
+import re
+import id_no_generator
+import cv2
+import numpy as np
+import Levenshtein
+from dict import name_reg_dict
+from crnn.keys import alphabetChinese
+
+
+
+
+class ExtractROI():
+
+    def __init__(self):
+        self.IV_NO = 'IV_NO'
+        self.IV_ID = 'IV_ID'
+        self.DATE = 'DATE'
+        self.AMOUNT = 'AMOUNT'
+        self.IMG_NAME = 'IMG_NAME'
+        self.REG_NO = 'REG_NO'
+        self.CHECK_CODE = 'CHECK_CODE'
+        self.SIM_THRESHOLD = 0.9
+        self.alphabet = alphabetChinese + 'ç'
+
+    def char_converter(self, i):
+        return self.alphabet[i-1]
+
+
+    def draw_boxes(self,img,x,y,w,h):
+        img = cv2.rectangle(img,(int(x),int(y)),(int(x+w),int(y+h)),(0,255,0),3)
+        return img
+
+
+    def get_search_area(self, anchor_idx, roi_title, result, img):
+        result_dict = result[anchor_idx]
+        anchor_x, anchor_y, anchor_w, anchor_h = result_dict['cx']-result_dict['w']/2,result_dict['cy']-result_dict['h']/2,result_dict['w'],result_dict['h']
+        if roi_title == 'gender':
+            x = anchor_x + 5*anchor_h
+            y = anchor_y - 4*anchor_h
+            w = int(8*anchor_h)
+            h = 2*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+        if roi_title == 'name':
+            x = anchor_x - 11*anchor_h
+            y = anchor_y - 7*anchor_h
+            w = int(10*anchor_h)
+            h = 3*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+        if roi_title == 'cz_name':
+            x = anchor_x - 2*anchor_h
+            y = anchor_y + anchor_h
+            w = int(10*anchor_h)
+            h = 2*anchor_h
+            img = self.draw_boxes(img,x,y,w,h)
+            return x,y,w,h,img
+
+
+    def find_gender_in_search_area(self,x,y,w,h,male_dict,female_dict,result):
+        gender = ''
+        if male_dict:
+            for key in male_dict.keys():
+                cx, cy = float(result[key]['cx']),float(result[key]['cy'])
+                if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                    gender = '男'
+                    return gender
+        if female_dict:
+            for key in female_dict.keys():
+                result_dict = result[key]
+                cx, cy = float(result_dict['cx']), float(result_dict['cy'])
+                if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                    gender = '女'
+                    return gender
+        return gender
+
+    def get_pure_chinese(self,text):
+        pure_chi = []
+        for c in text:
+            if c>=u'\u4e00' and c<=u'\u9fa5':
+                pure_chi.append(c)
+        return ''.join(pure_chi)
+
+    def get_real_name(self,candidate_list):
+        name = ''
+        min_ratio = 1.1
+        for candidate in list(candidate_list.keys()):
+            for ref in self.template_words_list:
+                temp_ratio = Levenshtein.ratio(candidate,ref)
+                if temp_ratio < min_ratio:
+                    min_ratio = temp_ratio
+                    name = candidate
+        return name
+
+    def sort_dict_by_value(self,a_dict):
+        return dict(sorted(a_dict.items(), key=lambda x: x[1], reverse=False))
+
+    def find_name_in_search_area(self, x, y, w, h, result):
+        name = ''
+        candidate_dict = {}
+        for idx, a_result in enumerate(result):
+            cx, cy = a_result['cx'], a_result['cy']
+            if cx>=x and cx<=x+w and cy>=y and cy<=y+h:
+                chi_text = self.get_pure_chinese(a_result['text']).replace('丨','')
+                if len(chi_text) >= 2 and len(chi_text) <= 4:
+                    candidate_dict[chi_text] = cx
+        candidate_dict = self.sort_dict_by_value(candidate_dict)
+        name = self.get_real_name(candidate_dict)
+        if name.find('名')==0:
+            name = name.replace('名', '', 1)
+            return name
+        return name
+
+    def get_name(self,result,anchor_matched_dict, anchor_cz_matched_dict,img):
+        name = ''
+        if anchor_matched_dict:
+            anchor_idx = list(anchor_matched_dict.keys())[0]
+            x, y, w, h, img = self.get_search_area(anchor_idx, 'name', result, img)
+            name = self.find_name_in_search_area(x, y, w, h, result)
+            return name, img
+        elif anchor_cz_matched_dict:
+            anchor_idx = list(anchor_cz_matched_dict.keys())[0]
+            x, y, w, h, img = self.get_search_area(anchor_idx, 'cz_name', result, img)
+            name = self.find_name_in_search_area(x, y, w, h, result)
+            return name, img
+
+        else:
+            return name, img
+
+
+    def get_dob(self,dob_matched_dict):
+        dob = ''
+        if dob_matched_dict:
+            return list(dob_matched_dict.values())[0]
+        return dob
+
+    def get_id_no(self, id_no_matched):
+        return id_no_matched
+
+    def get_gender(self,dob_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict,result, img):
+        vote_dict = {'男':0,'女':0}
+
+        if anchor_matched_dict:
+            anchor_idx = list(anchor_matched_dict.keys())[0]
+            x,y,w,h,img = self.get_search_area(anchor_idx, 'gender', result, img)
+            gender = self.find_gender_in_search_area(x,y,w,h,male_dict,female_dict,result)
+            print('gender is: ',gender)
+            if gender != '':
+                vote_dict[gender] = vote_dict.get(gender,0)+5
+
+            else:
+                vote_dict['男'] += (len(male_dict)) + gender_cnt_dict['男']
+                vote_dict['女'] += (len(female_dict)) + gender_cnt_dict['女']
+        else:
+            vote_dict['男'] += (len(male_dict)) + gender_cnt_dict['男']
+            vote_dict['女'] += (len(female_dict)) + gender_cnt_dict['女']
+
+        return '男' if vote_dict['男'] >= vote_dict['女'] else '女' ,img
+
+    def is_decimal(self, a_num):
+        if not a_num.count('.') == 1:
+            return False
+        a_list = a_num.split('.')
+        return a_list[0].isdigit() and a_list[1].isdigit()
+
+    def sort_dict_by_value(self,a_dict):
+        return dict(sorted(a_dict.items(), key=lambda x: x[1], reverse=False))
+
+    def remove_chn(self, text):
+        content = []
+        for c in text:
+            if c < u'\u4e00' or c > u'\u9fa5':
+                content.append(c)
+        return ''.join(content)
+
+    def replace_ith_char(self,a_str,i,new_c):
+        str_list = list(a_str)
+        str_list[i] = new_c
+        return ''.join(str_list)
+
+    def refine_rmb(self,idx,result,rmb_raw):
+        pixel_list = result[idx]['pixel_list']
+        sorted_idx = result[idx]['sorted_index']
+        for i, c in enumerate(rmb_raw):
+            if c.isalpha():
+                p_i = pixel_list[i]
+                new_c_list = sorted_idx[p_i,:]
+                for new_idx in new_c_list:
+                    new_c = self.char_converter(new_idx)
+                    if new_c.isdigit():
+                        rmb_raw = self.replace_ith_char(rmb_raw,i,new_c)
+                        break
+        return rmb_raw
+
+
+    def find_re(self,result):
+        selected_idx_list = []
+        DATE_REX = re.compile("([0-9oO]+.*年[0-9oO]{1,2}月[0-9oO]{1,2}日)")
+        IV_NO_REX = re.compile(r'No[\d]{7,19}')
+        AMOUNT_REX = re.compile(r'小写.*')
+        RMB_REX = re.compile(r'￥.*')
+        REG_REX = re.compile(r'[0-9A-Za-z]{14,21}')
+        IV_ID_REX = re.compile(r'[0-9]{9,12}')
+        CHECK_CODE_REX = re.compile(r'校验码.*')
+        DIGITAL_NO_REX = re.compile(r'[\d]{7,9}')
+
+        date_matched_dict={}
+        iv_no_matched_dict={}
+        amount_dict = {}
+        reg_dict = {}
+        iv_id_dict = {}
+        rmb_dict = {}
+        check_dict = {}
+        is_digit = False
+
+        for idx,content in enumerate(result):
+            if idx in selected_idx_list:
+                continue
+            date_matched_text = re.findall(DATE_REX, content['text'])
+            if len(date_matched_text) > 0:
+                date_matched_dict[idx] = date_matched_text[0]
+                selected_idx_list.append(idx)
+                continue
+
+            check_code_matched_text = re.findall(CHECK_CODE_REX, content['text'])
+            if len(check_code_matched_text) > 0:
+                check_dict[idx] = check_code_matched_text[0]
+                selected_idx_list.append(idx)
+                continue
+
+            iv_id_matched_text = re.findall(IV_ID_REX,content['text'])
+            if len(iv_id_matched_text) > 0 and not content['text'].startswith('No'):
+                iv_id_dict[idx] = iv_id_matched_text[0]
+                selected_idx_list.append(idx)
+                if iv_id_matched_text[0].startswith('0'):
+                    is_digit = True
+                    continue
+
+            if is_digit:
+                iv_no_matched_text = re.findall(DIGITAL_NO_REX, content['text'])
+                if len(iv_no_matched_text) > 0 and len(self.remove_chn(content['text']))<=9:
+                    iv_no_matched_dict[idx] = iv_no_matched_text[0]
+                    selected_idx_list.append(idx)
+                    continue
+            else:
+                iv_no_matched_text = re.findall(IV_NO_REX, content['text'])
+                if len(iv_no_matched_text) > 0:
+                    iv_no_matched_dict[idx] = iv_no_matched_text[0]
+                    selected_idx_list.append(idx)
+                    continue
+
+            # amount_matched_text = re.findall(AMOUNT_REX,content['text'])
+            # if len(amount_matched_text) > 0:
+            #     amount_dict[idx] = amount_matched_text[0]
+            #     selected_idx_list.append(idx)
+            #     continue
+
+            reg_matched_text = re.findall(REG_REX,content['text'])
+            if len(reg_matched_text) > 0 and len(reg_matched_text[0])<=18 and not reg_matched_text[0].startswith('No') and len(self.remove_chn(content['text']))<=18:
+                reg_dict[idx] = reg_matched_text[0]
+                selected_idx_list.append(idx)
+                continue
+
+            rmb_matched_text = re.findall(RMB_REX,content['text'])
+            # if len(rmb_matched_text) > 0:
+            #     if self.is_decimal(rmb_matched_text[0].replace('￥','')):
+            #         rmb_dict[idx] = float(self.remove_chn(rmb_matched_text[0].replace('￥','')))
+            #         selected_idx_list.append(idx)
+            #         continue
+            if len(rmb_matched_text) > 0:
+                rmb_raw = rmb_matched_text[0]
+                # if rmb_raw == '￥1886.7p':
+                #     print('1')
+                rmb = self.remove_chn(self.refine_rmb(idx,result,rmb_raw).replace('￥',''))
+                if self.is_decimal(rmb):
+                    rmb_dict[idx] = float(rmb)
+                    selected_idx_list.append(idx)
+                    continue
+
+        return date_matched_dict, iv_no_matched_dict, amount_dict, reg_dict, iv_id_dict, rmb_dict, check_dict
+
+    def get_final_reg(self,reg_temp):
+        for reg in list(name_reg_dict.keys()):
+            similarity = Levenshtein.ratio(reg, reg_temp)
+            if similarity >= self.SIM_THRESHOLD:
+                return reg
+        return reg_temp
+
+    def get_roi(self, img_name, result,img):
+        # img = np.asarray(img)
+        ocr_dict={}
+        ocr_dict[self.IMG_NAME] = img_name
+        #get info
+        date_matched_dict, iv_no_matched_dict, amount_dict, reg_dict, iv_id_dict, rmb_dict, check_dict = self.find_re(result)
+        ocr_dict[self.DATE] = ''
+        ocr_dict[self.IV_NO] = ''
+        ocr_dict[self.REG_NO] = ''
+        ocr_dict[self.IV_ID] = ''
+        ocr_dict[self.AMOUNT] = ''
+        ocr_dict[self.CHECK_CODE] = ''
+
+        if date_matched_dict:
+            ocr_dict[self.DATE] = list(date_matched_dict.values())[0]
+
+        if iv_no_matched_dict:
+            if 'No' in list(iv_no_matched_dict.values())[0]:
+                ocr_dict[self.IV_NO] = list(iv_no_matched_dict.values())[0][2:10]
+            else:
+                ocr_dict[self.IV_NO] = list(iv_no_matched_dict.values())[0]
+
+        if reg_dict:
+            reg_temp = list(reg_dict.values())[0]
+            ocr_dict[self.REG_NO] = self.get_final_reg(reg_temp)
+
+        if iv_id_dict:
+            ocr_dict[self.IV_ID] = list(iv_id_dict.values())[0]
+
+        if rmb_dict:
+            sorted_rmb_dict = self.sort_dict_by_value(rmb_dict)
+            if len(sorted_rmb_dict) > 1:
+                ocr_dict[self.AMOUNT] = "%.2f" % list(sorted_rmb_dict.values())[1]
+            else:
+                ocr_dict[self.AMOUNT] = "%.2f" % list(sorted_rmb_dict.values())[0]
+        if check_dict:
+            ocr_dict[self.CHECK_CODE] = self.remove_chn(list(check_dict.values())[0])
+
+        # if id_no_matched_dict:
+        #     id_no_matched = list(id_no_matched_dict.values())[0]
+        #     is_valid, _, gender_from_no, dob_from_no = id_no_generator.is_id_card(id_no_matched)
+        #     # is_valid = False
+        # if is_valid:
+        #     ocr_dict[self.ID_NO] = id_no_matched
+        #     ocr_dict[self.GENDER] = gender_from_no
+        #     ocr_dict[self.DOB] = dob_from_no
+        #     ocr_dict[self.IS_VALID] = True
+        # else:
+        #     if id_no_matched!='':
+        #         ocr_dict[self.ID_NO] = self.get_id_no(id_no_matched)
+        #     else:
+        #         ocr_dict[self.ID_NO] = ''
+        #     ocr_dict[self.GENDER],img = self.get_gender(dob_matched_dict, male_dict, female_dict, gender_cnt_dict, anchor_matched_dict, result, img)
+        #     ocr_dict[self.DOB] = self.get_dob(dob_matched_dict)
+        #     ocr_dict[self.IS_VALID] = False
+
+        # ocr_dict[self.NAME],img = self.get_name(result,anchor_matched_dict,anchor_cz_matched_dict,img)
+        # cv2.imshow('final',img)
+        # cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+        # cv2.imwrite('./imgWithBBox/'+img_name,img)
+
+        print(ocr_dict)
+        return ocr_dict
