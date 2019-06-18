@@ -5,6 +5,10 @@ import cv2
 from glob import glob
 import pathlib
 
+#host = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=EwtZniA3jgPbGo86eT2Tb1t3&client_secret=5iIYPLswLk0hnI3LGoFugsgNFiVmoXjH'
+#json = requests.post(host).json()
+#print(json)
+
 def write_xml(json,img_path):
     img_arr = cv2.imread(img_path)
     H, W, C = img_arr.shape
