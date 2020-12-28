@@ -1,0 +1,68 @@
+import cv2
+from glob import glob
+import pathlib
+import numpy as np
+
+save_path = './crop_imgs/'
+
+def find_nearest_line_up(y_sum,mean,line):
+    while(y_sum[line]<=mean):
+        line+=1
+    return line
+
+
+def cropByYValue(img):
+    h,w,_ = img.shape
+    ratio = 1.2
+    stand_h = w * ratio
+    n = int(h/stand_h)
+    if n <= 1:
+      return [h]
+
+    interval = int(h/n)
+
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    y_sum = np.sum(img,axis=1)
+    mean = np.mean(y_sum)
+
+    crop_lines=[]
+    pre_line = 0
+    for i in range(n-1):
+        temp_line = pre_line + interval
+        int(temp_line)
+        if y_sum[temp_line] <= mean:
+            adjust_line = find_nearest_line_up(y_sum,mean,temp_line)
+            cur_line = adjust_line
+        else:
+            cur_line = temp_line
+        crop_lines.append(cur_line)
+        pre_line = cur_line+1
+    return crop_lines
+
+
+def main():
+    img_path_list = glob('./images/*.jpg')
+    for img_path in img_path_list:
+        img_name = pathlib.Path(img_path).stem
+        print(img_name)
+
+        img_arr = cv2.imread(img_path)
+        crop_lines = cropByYValue(img_arr)
+        top_line = 0
+        for idx,crop_line in enumerate(crop_lines):
+            if len(crop_lines)==1:
+                crop_img = img_arr
+            elif idx == len(crop_lines)-1:
+                start = crop_line
+                end = img_arr.shape[0]
+                crop_img = img_arr[start:end,:]
+            else:
+                start = top_line
+                end =  crop_line
+                crop_img = img_arr[start:end,:]
+                top_line = end
+            cv2.imwrite(save_path+img_name+'_'+str(idx)+'.jpg',crop_img)
+
+
+if __name__ == '__main__':
+    main()
