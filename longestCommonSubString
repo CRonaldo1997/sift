@@ -1,0 +1,80 @@
+def adjustIndex(seq):
+    new_idx = []
+    cnt=0
+    for idx in range(len(seq)):
+        if seq[idx]!='¿':
+            new_idx.append(cnt)
+            cnt+=1
+        else:
+            new_idx.append('¿')
+    return new_idx
+
+def backTrack(seq1, seq2, path):
+
+    i = len(seq1)
+    j = len(seq2)
+    res1 = ''
+    res2 = ''
+    res1_mark = []
+    res2_mark = []
+    while i > 0 and j > 0:
+        if path[i][j] == 1:
+            res1 += seq1[i - 1]
+            res2 += seq2[j - 1]
+            i -= 1
+            j -= 1
+        elif path[i][j] == 2:
+            res1 += seq1[i - 1]
+            res2 += '¿'
+            res2_mark.append(j)
+            # res1_mark.append(j)
+            i -= 1
+        else:
+            res1 += '¿'
+            res1_mark.append(i)
+            # res2_mark.append(j)
+            res2 += seq2[j - 1]
+            j -= 1
+    if i > 0:
+        pad_len = i
+        res1 += seq1[0:i][::-1]
+        res2 += ''.join(['¿'] * pad_len)
+        res2_mark.append(0)
+        # res1_mark.append(0)
+    if j > 0:
+        pad_len = j
+        res2 += seq2[0:j][::-1]
+        res1 += ''.join(['¿'] * pad_len)
+        res1_mark.append(0)
+        # res2_mark.append(0)
+    return res1[::-1], res2[::-1],list(set(res1_mark)),list(set(res2_mark))
+
+
+def longestSubSeq(seq1, seq2):
+    l1 = len(seq1)  # rows
+    l2 = len(seq2)  # colums
+    dp = [[0] * (l2 + 1) for _ in range(l1 + 1)]
+    path = [[0] * (l2 + 1) for _ in range(l1 + 1)]
+
+    for i in range(l1 + 1):
+        for j in range(l2 + 1):
+            if i == 0 or j == 0:
+                dp[i][j] = 0
+            elif seq1[i - 1] == seq2[j - 1]:
+                dp[i][j] = dp[i - 1][j - 1] + 1
+                path[i][j] = 1  # from top_left
+            elif dp[i - 1][j] > dp[i][j - 1]:
+                dp[i][j] = dp[i - 1][j]
+                path[i][j] = 2  # from top
+            else:
+                dp[i][j] = dp[i][j - 1]
+                path[i][j] = 3  # from left
+    res1, res2, res1_mark, res2_mark = backTrack(seq1, seq2, path)
+    org_idx_seq1 = adjustIndex(res1)
+    org_idx_seq2 = adjustIndex(res2)
+    print(max(max(dp)))
+    print(res1)
+    print(res2)
+    return res1,res2
+
+print(longestSubSeq('$$991231','1312310$$'))
